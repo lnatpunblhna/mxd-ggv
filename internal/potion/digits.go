@@ -9,53 +9,19 @@ import (
 )
 
 const (
-	matchMin   = 0.58
-	learnSim   = 0.92
-	maxLearned = 8
-	lumaInk    = 230.0
-	satInkMax  = 0.45
-	inkRadius  = 1
+	matchMin = 0.58
+	// tmplSimilar 判重用：内置模板逐档缩放时会撞出一模一样的位图。
+	sameTmpl = 0.92
+	// 原始字形的字身是白到淡蓝的渐变（最暗一档 #99CCFF，亮度约 195、饱和度 0.40），
+	// 阈值必须罩住整段渐变，否则每个数字的下半截都会被判成背景。
+	lumaInk   = 190.0
+	satInkMax = 0.45
+	// 渐变里有色的几档色相都在 180°-216°，留一点余量。
+	countInkHueMin = 165.0
+	countInkHueMax = 240.0
+	countInkSMin   = 0.10
+	inkRadius      = 1
 )
-
-// 5x7 点阵，用作数量识别的内置字形。
-var builtin5x7 = [10]string{
-	"01110100011000110001100011000101110",
-	"00100011000010000100001000010001110",
-	"01110100010000100110010001000011111",
-	"01110100010000100110000011000101110",
-	"10001100011000111111000010000100001",
-	"11111100001000011110000011000101110",
-	"01110100001000011110100011000101110",
-	"11111000010001000100010000100001000",
-	"01110100011000101110100011000101110",
-	"01110100011000101111000011000101110",
-}
-
-type mapleSpec struct {
-	d, w, h int
-	bits    string
-}
-
-// 冒险岛快捷栏数量的真实字形（从药格截图提取）。
-var mapleNative = []mapleSpec{
-	{1, 5, 18, ".......##...##..###..###...##...##...##...##........##...##...##...##...##...##...##......"},
-	{1, 7, 19, "...........##.....##..#####..#####.....##.....##.....##.....##.....##.....##.....##.....##.....##.....##.....##.....##.....##........"},
-	{1, 8, 19, ".............##......##..######..######......##......##......##......##......##......##......##......##......##......##......##......##......##........."},
-	{1, 13, 11, "...................##..#........##..##..#......##....#......##...........##...........##...........##...........##.........##..##.............."},
-	{1, 14, 12, ".........................##........######........######............##............##............##............##............##..##........##...#........##..............."},
-	{3, 13, 19, "................#######......#######....##.......##..##.......##......#....##......#....##...........##...........##......######............##...........##...........##...........##..##.......##..##.......##....#######......#######................"},
-	{3, 13, 13, "................#.....#......#######....##.......##..##.......##......#....##......#....##...........##...........##......#####.............##...........##.............."},
-	{3, 15, 13, "..................#.....#..#.....#######..##..##.......##....##.......##........###..##........###..##.............##.............##........#####..##...........##.............##.................."},
-	{3, 13, 12, "..............#######..##.........##...........##......###..##......###..##...........##...........##......#####..##.........##...........##................"},
-	{4, 13, 12, "..............#....###.##..#....#..###..#..###..###..#..#..##.##..####..##.##..##..##...##..##..##...##....##.....##....#########....#......................"},
-	{4, 15, 13, ".......................#.##....#....###.##....#....#..###....#..###..###....#..#..##.##....####..##.##....##..##...##....##..##...##......##.....##......###########....#.........#................"},
-	{8, 13, 18, "................#######......#######....##.......##..##.......##..##..###..##..##..###..##..##.......##..##.......##..###########..##.......##..##.......##..##.......##..##.......##..##.......##..##.......##....#######................"},
-	{8, 14, 18, ".................########......########....##........##..##........##..##..####..##..##..####..##..##........##..##........##..############..##........##..##........##..##........##..##........##..##........##..##........##....########................."},
-	{8, 15, 20, "................####...........####...........##..#######....##..#######......##.......##....##.......##....##..###..##....##..###..##....##.......##....##.......##...................##.......##....##.......##....##.......##....##.......##....##.......##....##.......##......#######.................."},
-	{8, 14, 11, ".................#......#......########....##........##..##........##..##........##..##........##..##........##..##........##....########................."},
-	{8, 13, 11, "..................#........#####.............##...........##......###..##......###..##...........##...........##......#####..####.............."},
-	{9, 13, 16, "................#######......#######....##.......##..##.......##..##..##...##..##..##...##..##.......##..##.......##..##.......##....#########....#########...........##...........##...........##.............."},
-}
 
 type tmplPt struct{ x, y int }
 
@@ -63,9 +29,12 @@ type digitTmpl struct {
 	Digit int
 	W, H  int
 	Bits  []bool
+	// Anti 是原始字形的黑色描边，和 Bits 同尺寸。描边位置上出现亮点
+	// 说明那里其实是背景（药水图标的高光），用来扣分。
+	Anti  []bool
 	Ink   []tmplPt
 	NInk  int
-	Img   *bgra
+	NAnti int
 }
 
 func (t *digitTmpl) ensure() {
@@ -81,6 +50,12 @@ func (t *digitTmpl) ensure() {
 		}
 	}
 	t.NInk = len(t.Ink)
+	t.NAnti = 0
+	for _, on := range t.Anti {
+		if on {
+			t.NAnti++
+		}
+	}
 }
 
 func (t digitTmpl) usable() bool {
@@ -94,104 +69,15 @@ func (t digitTmpl) usable() bool {
 	return t.W >= 3
 }
 
-type digitBank struct {
-	learned [10][]digitTmpl
+// stencilHint 是读数时的一点运行期缓存：记住上一次原始字形匹配命中的字号档位，
+// 下次先试它。游戏跑起来后 UI 缩放不会变，命中一次就能一直省下逐档试的开销。
+// size 为 -1 表示还没命中过。识别本身只靠内置字形，不依赖任何积累下来的状态。
+type stencilHint struct {
+	size int
 }
 
-func newDigitBank() *digitBank {
-	return &digitBank{}
-}
-
-func (b *digitBank) clone() *digitBank {
-	out := newDigitBank()
-	out.mergeFrom(b)
-	return out
-}
-
-func (b *digitBank) mergeFrom(src *digitBank) {
-	if b == nil || src == nil {
-		return
-	}
-	for d := 0; d <= 9; d++ {
-		for _, t := range src.learned[d] {
-			b.learn(d, t)
-		}
-	}
-}
-
-func (b *digitBank) coverage() []int {
-	if b == nil {
-		return nil
-	}
-	var have []int
-	for d := 0; d <= 9; d++ {
-		if len(b.learned[d]) > 0 {
-			have = append(have, d)
-		}
-	}
-	return have
-}
-
-func (b *digitBank) size() int {
-	if b == nil {
-		return 0
-	}
-	n := 0
-	for d := 0; d <= 9; d++ {
-		n += len(b.learned[d])
-	}
-	return n
-}
-
-func (b *digitBank) learn(d int, t digitTmpl) {
-	if b == nil || d < 0 || d > 9 {
-		return
-	}
-	t.Digit = d
-	t.Ink = nil
-	if t.Img != nil && (t.Img.W < 4 || t.Img.H < 7) {
-		t.Img = nil
-	}
-	t.ensure()
-	if !t.usable() {
-		return
-	}
-	if !shapeFitsDigit(t, d) {
-		return
-	}
-	b.dropConflicts(d, t)
-	for _, old := range b.learned[d] {
-		if tmplSimilar(old, t) {
-			return
-		}
-	}
-	if len(b.learned[d]) >= maxLearned {
-		b.learned[d] = b.learned[d][1:]
-	}
-	b.learned[d] = append(b.learned[d], t)
-}
-
-func (b *digitBank) dropConflicts(d int, t digitTmpl) {
-	if b == nil {
-		return
-	}
-	for od := 0; od <= 9; od++ {
-		if od == d {
-			continue
-		}
-		kept := b.learned[od][:0]
-		for _, old := range b.learned[od] {
-			if glyphScore(t, old) >= 0.88 {
-				continue
-			}
-			kept = append(kept, old)
-		}
-		if len(kept) == 0 {
-			b.learned[od] = nil
-			continue
-		}
-		b.learned[od] = kept
-	}
+func newStencilHint() *stencilHint {
+	return &stencilHint{size: -1}
 }
 
 func tmplSimilar(a, b digitTmpl) bool {
@@ -213,7 +99,7 @@ func tmplSimilar(a, b digitTmpl) bool {
 	if den == 0 {
 		return true
 	}
-	return float64(2*inter)/float64(den) >= learnSim
+	return float64(2*inter)/float64(den) >= sameTmpl
 }
 
 var (
@@ -226,18 +112,26 @@ func builtins() [10][]digitTmpl {
 	return builtinTmpls
 }
 
+// builtinHeights 覆盖 1x-3x 的字高。游戏按整数倍放大 UI，
+// 但窗口尺寸对不齐时截图会零星丢行，实测 2x 的数字常是 17 而不是 22 像素高，
+// 所以整数倍之外还要铺几档中间高度。
+var builtinHeights = []int{11, 14, 17, 20, 22, 25, 28, 33}
+
+// buildBuiltins 用解包出来的原始字形建模板：每档高度一份，
+// 最小的两档再加一份加粗版，补偿描边把笔画吃掉一圈的情况。
 func buildBuiltins() {
+	glyphs, err := nativeDigits()
+	if err != nil {
+		return
+	}
 	for d := 0; d <= 9; d++ {
-		for scale := 1; scale <= 3; scale++ {
-			t := scaleGlyph(d, scale)
+		for i, h := range builtinHeights {
+			t := glyphs[d].tmplAtHeight(h)
 			addBuiltin(d, t)
-			if scale <= 2 {
+			if i < 2 {
 				addBuiltin(d, thicken(t))
 			}
 		}
-	}
-	for _, sp := range mapleNative {
-		addBuiltin(sp.d, mapleTmpl(sp))
 	}
 }
 
@@ -253,40 +147,6 @@ func addBuiltin(d int, t digitTmpl) {
 		}
 	}
 	builtinTmpls[d] = append(builtinTmpls[d], t)
-}
-
-func scaleGlyph(d, scale int) digitTmpl {
-	src := builtin5x7[d]
-	if scale < 1 {
-		scale = 1
-	}
-	w, h := 5*scale, 7*scale
-	bits := make([]bool, w*h)
-	for y := 0; y < 7; y++ {
-		for x := 0; x < 5; x++ {
-			if src[y*5+x] != '1' {
-				continue
-			}
-			for dy := 0; dy < scale; dy++ {
-				for dx := 0; dx < scale; dx++ {
-					bits[(y*scale+dy)*w+(x*scale+dx)] = true
-				}
-			}
-		}
-	}
-	return padTmpl(digitTmpl{Digit: d, W: w, H: h, Bits: bits}, 1)
-}
-
-func mapleTmpl(sp mapleSpec) digitTmpl {
-	need := sp.w * sp.h
-	if need <= 0 || len(sp.bits) != need {
-		return digitTmpl{Digit: sp.d}
-	}
-	bits := make([]bool, need)
-	for j, c := range sp.bits {
-		bits[j] = c == '1' || c == '#'
-	}
-	return digitTmpl{Digit: sp.d, W: sp.w, H: sp.h, Bits: bits}
 }
 
 func thicken(t digitTmpl) digitTmpl {
@@ -306,7 +166,15 @@ func thicken(t digitTmpl) digitTmpl {
 			}
 		}
 	}
-	return digitTmpl{Digit: t.Digit, W: t.W, H: t.H, Bits: out}
+	// 字身胀了一圈，描边要相应让位，否则自己就把自己扣分了。
+	var anti []bool
+	if t.Anti != nil {
+		anti = make([]bool, len(t.Anti))
+		for i, on := range t.Anti {
+			anti[i] = on && !out[i]
+		}
+	}
+	return digitTmpl{Digit: t.Digit, W: t.W, H: t.H, Bits: out, Anti: anti}
 }
 
 func padTmpl(t digitTmpl, p int) digitTmpl {
@@ -322,7 +190,7 @@ func padTmpl(t digitTmpl, p int) digitTmpl {
 			}
 		}
 	}
-	return digitTmpl{Digit: t.Digit, W: w, H: h, Bits: bits, Img: t.Img}
+	return digitTmpl{Digit: t.Digit, W: w, H: h, Bits: bits}
 }
 
 type inkMode int
@@ -342,8 +210,19 @@ func isYellowInk(h, s, l float64) bool {
 	return s >= 0.08 && l >= 145
 }
 
-func isWhiteInk(s, l float64) bool {
-	return l >= lumaInk && s <= satInkMax
+// isCountInk 按解包出来的原始字形配色判断字身像素。
+// 字身只有 6 种颜色（#FFFFFF #EEFFFF #DDEEFF #BBDDFF #AACCFF #99CCFF），
+// 全部是高亮度、低饱和、色相落在青蓝一段，靠这条件能把药水图标的
+// 暖色高光和深色底纹直接排掉。
+func isCountInk(h, s, l float64) bool {
+	if l < lumaInk || s > satInkMax {
+		return false
+	}
+	if s < countInkSMin {
+		// 近乎纯白，没有可靠色相。
+		return true
+	}
+	return h >= countInkHueMin && h <= countInkHueMax
 }
 
 func nearDark(im *bgra, x, y int, luma float64) bool {
@@ -369,10 +248,6 @@ func nearDark(im *bgra, x, y int, luma float64) bool {
 	return false
 }
 
-func inkMask(im *bgra) ([]bool, int, int) {
-	return inkMaskMode(im, inkOutlined)
-}
-
 func inkMaskMode(im *bgra, mode inkMode) ([]bool, int, int) {
 	if im == nil || im.empty() {
 		return nil, 0, 0
@@ -390,7 +265,7 @@ func inkMaskMode(im *bgra, mode inkMode) ([]bool, int, int) {
 			case inkYellow:
 				on = isYellowInk(hh, s, l)
 			default:
-				on = isWhiteInk(s, l) && nearDark(im, x, y, l)
+				on = isCountInk(hh, s, l) && nearDark(im, x, y, l)
 			}
 			mask[y*w+x] = on
 		}
@@ -486,6 +361,19 @@ func nccBinaryAt(mask []bool, in integ, x, y int, t digitTmpl) float64 {
 		return 0
 	}
 	v := num / math.Sqrt(denT*denH)
+	// 描边位置上的亮点是背景漏进来的，按比例扣分。
+	if t.NAnti > 0 {
+		bleed := 0
+		for i, on := range t.Anti {
+			if !on {
+				continue
+			}
+			if mask[(y+i/t.W)*in.W+(x+i%t.W)] {
+				bleed++
+			}
+		}
+		v -= antiWeight * float64(bleed) / float64(t.NAnti)
+	}
 	if v < 0 {
 		return 0
 	}
@@ -532,29 +420,7 @@ func matchMask(mask []bool, in integ, w, h int, t digitTmpl) []tmplHit {
 	return hits
 }
 
-func matchGray(im *bgra, t digitTmpl) []tmplHit {
-	if im == nil || t.Img == nil || t.Img.empty() {
-		return nil
-	}
-	if t.Img.W > im.W || t.Img.H > im.H {
-		return nil
-	}
-	maxX := im.W - t.Img.W
-	maxY := im.H - t.Img.H
-	var hits []tmplHit
-	for y := 0; y <= maxY; y++ {
-		for x := 0; x <= maxX; x++ {
-			s := nccGrayWindow(im, t.Img, x, y)
-			if s < matchMin+0.04 {
-				continue
-			}
-			hits = append(hits, tmplHit{x: x, y: y, w: t.Img.W, h: t.Img.H, d: t.Digit, s: s})
-		}
-	}
-	return hits
-}
-
-func scanMask(im *bgra, bank *digitBank, mode inkMode) []tmplHit {
+func scanMask(im *bgra, mode inkMode) []tmplHit {
 	mask, w, h := inkMaskMode(im, mode)
 	if w < 4 || h < 4 {
 		return nil
@@ -565,31 +431,6 @@ func scanMask(im *bgra, bank *digitBank, mode inkMode) []tmplHit {
 	for d := 0; d <= 9; d++ {
 		for _, t := range builtins()[d] {
 			hits = append(hits, matchMask(mask, in, w, h, t)...)
-		}
-		if bank == nil {
-			continue
-		}
-		for _, t := range bank.learned[d] {
-			if t.Img != nil {
-				continue
-			}
-			hits = append(hits, matchMask(mask, in, w, h, t)...)
-		}
-	}
-	return hits
-}
-
-func scanColor(im *bgra, bank *digitBank) []tmplHit {
-	if im == nil || bank == nil {
-		return nil
-	}
-	var hits []tmplHit
-	for d := 0; d <= 9; d++ {
-		for _, t := range bank.learned[d] {
-			if t.Img == nil || t.Img.W < 4 || t.Img.H < 7 {
-				continue
-			}
-			hits = append(hits, matchGray(im, t)...)
 		}
 	}
 	return hits
@@ -844,25 +685,29 @@ func assembleHits(hits []tmplHit) (n int, score float64, digits int) {
 	return n, sum / float64(len(hits)), len(hits)
 }
 
-func matchRegion(im *bgra, bank *digitBank) []tmplHit {
+func matchRegion(im *bgra, hint *stencilHint) []tmplHit {
 	if im == nil || im.empty() {
 		return nil
 	}
-	if bank == nil {
-		bank = newDigitBank()
+	if hint == nil {
+		hint = newStencilHint()
 	}
-	if hits := readBySegment(im, bank); len(hits) > 0 {
+	// 先用解包出来的原始字形直接在像素上比对，这条路最准；
+	// 认不出来（字号超出预期、被别的东西挡住）再退回二值化那套。
+	if hits := readByStencil(im, hint); len(hits) > 0 {
 		return hits
 	}
-	hits := scanColor(im, bank)
-	hits = append(hits, scanMask(im, bank, inkYellow)...)
-	hits = append(hits, scanMask(im, bank, inkOutlined)...)
+	if hits := readBySegment(im); len(hits) > 0 {
+		return hits
+	}
+	hits := scanMask(im, inkYellow)
+	hits = append(hits, scanMask(im, inkOutlined)...)
 	hits = nmsHits(hits)
 	return clusterDigitHits(hits)
 }
 
-func readByMatch(im *bgra, bank *digitBank) (n int, score float64, digits int) {
-	return assembleHits(matchRegion(im, bank))
+func readByMatch(im *bgra, hint *stencilHint) (n int, score float64, digits int) {
+	return assembleHits(matchRegion(im, hint))
 }
 
 func countRegion(slot *bgra) *bgra {
@@ -881,18 +726,18 @@ func countRegion(slot *bgra) *bgra {
 	return cropImage(slot, r)
 }
 
-func readCount(slot *bgra, bank *digitBank) int {
-	n, _ := readCountScore(slot, bank)
+func readCount(slot *bgra, sh *stencilHint) int {
+	n, _ := readCountScore(slot, sh)
 	return n
 }
 
-func readCountScore(slot *bgra, bank *digitBank) (int, float64) {
-	return readCountHint(slot, bank, 0)
+func readCountScore(slot *bgra, sh *stencilHint) (int, float64) {
+	return readCountHint(slot, sh, 0)
 }
 
-func readCountHint(slot *bgra, bank *digitBank, hint int) (int, float64) {
-	if bank == nil {
-		bank = newDigitBank()
+func readCountHint(slot *bgra, sh *stencilHint, hint int) (int, float64) {
+	if sh == nil {
+		sh = newStencilHint()
 	}
 	region := countRegion(slot)
 	if region == nil || region.W < 4 || region.H < 4 {
@@ -938,10 +783,14 @@ func readCountHint(slot *bgra, bank *digitBank, hint int) (int, float64) {
 		if im == nil || im.empty() {
 			return
 		}
-		n, s, k := readByMatch(im, bank)
+		n, s, k := readByMatch(im, sh)
 		consider(n, s, k)
 	}
 	try(region)
+	// 原始字形直接匹配上了就不用再折腾各种裁法。
+	if best.k > 0 && best.s >= stencilSure {
+		return best.n, best.s
+	}
 	if band := cropDigitBand(region, inkOutlined); band != nil {
 		try(band)
 	}
@@ -1023,186 +872,6 @@ func cropDigitBand(im *bgra, mode inkMode) *bgra {
 	return cropImage(im, image.Rect(0, bestY, lim, bestY+bestHH))
 }
 
-func learnCount(slot *bgra, value int, bank *digitBank) {
-	if bank == nil || value < 0 || slot == nil {
-		return
-	}
-	s := strconv.Itoa(value)
-	region := countRegion(slot)
-	if region == nil {
-		return
-	}
-	n := len(s)
-	if tryLearnSegment(region, s, n, bank) {
-		return
-	}
-	hits := matchRegion(region, bank)
-	if len(hits) == n {
-		got := 0
-		for _, h := range hits {
-			got = got*10 + h.d
-		}
-		if got == value {
-			for i, h := range hits {
-				d := int(s[i] - '0')
-				if tmplTooBig(digitTmpl{W: h.w, H: h.h}, region.W, region.H) {
-					continue
-				}
-				if t, ok := cropLearned(region, h, d); ok {
-					bank.learn(d, t)
-				}
-			}
-			return
-		}
-	}
-	for _, mode := range []inkMode{inkOutlined, inkYellow} {
-		if tryLearnSplit(region, s, n, bank, mode) {
-			return
-		}
-	}
-}
-
-func teachCount(slot *bgra, value int, bank *digitBank) int {
-	if bank == nil || value < 0 || slot == nil {
-		return 0
-	}
-	before := bank.size()
-	learnCount(slot, value, bank)
-	s := strconv.Itoa(value)
-	have := 0
-	for _, ch := range s {
-		d := int(ch - '0')
-		if d >= 0 && d <= 9 && len(bank.learned[d]) > 0 {
-			have++
-		}
-	}
-	if have == len(s) || bank.size() > before {
-		return have
-	}
-	return 0
-}
-
-func tryLearnSegment(region *bgra, s string, n int, bank *digitBank) bool {
-	if region == nil || region.empty() || n < 1 {
-		return false
-	}
-	mask, w, h := digitMask(region)
-	if w < 4 || h < 6 {
-		return false
-	}
-	parts := segmentDigits(mask, w, h)
-	if len(parts) != n {
-		parts = splitInkParts(mask, w, h, n)
-	}
-	if len(parts) != n {
-		return false
-	}
-	ok := 0
-	for i, p := range parts {
-		d := int(s[i] - '0')
-		t := tightFromMask(mask, w, p.x, p.y, p.x+p.w-1, p.y+p.h-1, d)
-		t.ensure()
-		if tmplTooBig(t, region.W, region.H) {
-			continue
-		}
-		t.Img = cropImage(region, image.Rect(p.x, p.y, p.x+p.w, p.y+p.h))
-		t.Digit = d
-		if t.usable() {
-			bank.learn(d, t)
-			ok++
-		}
-	}
-	return ok == n
-}
-
-func cropLearned(im *bgra, h tmplHit, d int) (digitTmpl, bool) {
-	if im == nil {
-		return digitTmpl{}, false
-	}
-	r := image.Rect(h.x, h.y, h.x+h.w, h.y+h.h).Intersect(image.Rect(0, 0, im.W, im.H))
-	if r.Empty() {
-		return digitTmpl{}, false
-	}
-	sub := cropImage(im, r)
-	mask, w, ht := inkMaskMode(sub, inkOutlined)
-	if w < 2 || ht < 2 {
-		mask, w, ht = inkMaskMode(sub, inkYellow)
-	}
-	t := tightTmpl(sub, mask, w, ht, d)
-	if !t.usable() {
-		return digitTmpl{}, false
-	}
-	return t, true
-}
-
-func tryLearnSplit(region *bgra, s string, n int, bank *digitBank, mode inkMode) bool {
-	if region == nil || region.empty() || n < 1 {
-		return false
-	}
-	src := region
-	if band := cropDigitBand(region, mode); band != nil {
-		src = band
-	}
-	mask, w, h := inkMaskMode(src, mode)
-	if w < 4 || h < 4 {
-		return false
-	}
-	cleanDigitMask(mask, w, h)
-	parts := splitInkParts(mask, w, h, n)
-	if len(parts) != n {
-		return false
-	}
-	ok := 0
-	for i, p := range parts {
-		d := int(s[i] - '0')
-		t := tightFromMask(mask, w, p.x, p.y, p.x+p.w-1, p.y+p.h-1, d)
-		if tmplTooBig(t, region.W, region.H) {
-			continue
-		}
-		if t.H < 7 && t.H*100 < region.H*18 {
-			continue
-		}
-		t.Img = cropImage(src, image.Rect(p.x, p.y, p.x+p.w, p.y+p.h))
-		if t.usable() {
-			bank.learn(d, t)
-			ok++
-		}
-	}
-	return ok == n
-}
-
-func tightTmpl(im *bgra, mask []bool, w, h, d int) digitTmpl {
-	if mask == nil && im != nil {
-		mask, w, h = inkMaskMode(im, inkOutlined)
-		if countOn(mask) < 4 {
-			mask, w, h = inkMaskMode(im, inkYellow)
-		}
-	}
-	if mask == nil || w < 1 || h < 1 {
-		return digitTmpl{Digit: d}
-	}
-	t := tightFromMask(mask, w, 0, 0, w-1, h-1, d)
-	if im != nil && t.W > 0 {
-		minX, minY, maxX, maxY := inkBBox(mask, w, h)
-		if maxX >= minX {
-			t.Img = cropImage(im, image.Rect(minX, minY, maxX+1, maxY+1))
-		} else {
-			t.Img = cloneBGRA(im)
-		}
-	}
-	return t
-}
-
-func countOn(mask []bool) int {
-	n := 0
-	for _, v := range mask {
-		if v {
-			n++
-		}
-	}
-	return n
-}
-
 func inkBBox(mask []bool, w, h int) (minX, minY, maxX, maxY int) {
 	minX, minY, maxX, maxY = w, h, -1, -1
 	for y := 0; y < h; y++ {
@@ -1263,74 +932,7 @@ func tightFromMask(mask []bool, w, x0, y0, x1, y1, d int) digitTmpl {
 	return padTmpl(digitTmpl{Digit: d, W: tw, H: th, Bits: bits}, 1)
 }
 
-func splitInkParts(mask []bool, w, h, n int) []tmplHit {
-	if n < 1 {
-		return nil
-	}
-	minX, minY, maxX, maxY := inkBBox(mask, w, h)
-	if maxX < minX {
-		return nil
-	}
-	bw := maxX - minX + 1
-	bh := maxY - minY + 1
-	if n == 1 {
-		return []tmplHit{{x: minX, y: minY, w: bw, h: bh}}
-	}
-	if bw < n*3 {
-		return nil
-	}
-	hist := make([]int, bw)
-	peak := 0
-	for x := 0; x < bw; x++ {
-		c := 0
-		for y := minY; y <= maxY; y++ {
-			if mask[y*w+(minX+x)] {
-				c++
-			}
-		}
-		hist[x] = c
-		if c > peak {
-			peak = c
-		}
-	}
-	runs := projectionRuns(hist, peak)
-	if len(runs) != n {
-		// 只在已经裁到数字带、墨迹比较完整时才等分。
-		if bh >= 6 && bw >= n*4 {
-			runs = equalRuns(bw, n)
-		}
-	}
-	if len(runs) != n {
-		return nil
-	}
-	out := make([]tmplHit, 0, n)
-	for _, r := range runs {
-		x0 := minX + r.x0
-		x1 := minX + r.x1
-		nb := tightRect(mask, w, x0, minY, x1, maxY)
-		if nb.w < 1 || nb.h < 1 {
-			return nil
-		}
-		out = append(out, nb)
-	}
-	return out
-}
-
-func equalRuns(bw, n int) []struct{ x0, x1 int } {
-	if n < 1 || bw < n {
-		return nil
-	}
-	out := make([]struct{ x0, x1 int }, n)
-	for i := 0; i < n; i++ {
-		out[i].x0 = bw * i / n
-		out[i].x1 = bw*(i+1)/n - 1
-		if out[i].x1 < out[i].x0 {
-			out[i].x1 = out[i].x0
-		}
-	}
-	return out
-}
-
+// tightRect 把一段范围收紧到其中真正有墨迹的外框。
 func tightRect(mask []bool, w, x0, y0, x1, y1 int) tmplHit {
 	minX, minY, maxX, maxY := x1, y1, x0, y0
 	found := false
@@ -1360,69 +962,34 @@ func tightRect(mask []bool, w, x0, y0, x1, y1 int) tmplHit {
 	return tmplHit{x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1}
 }
 
-func projectionRuns(hist []int, peak int) []struct{ x0, x1 int } {
-	if peak < 3 || len(hist) < 4 {
-		return nil
-	}
-	type run struct{ x0, x1 int }
-	var runs []run
-	in := false
-	start := 0
-	for x := 0; x <= len(hist); x++ {
-		on := x < len(hist) && hist[x] > 1
-		if on && !in {
-			start = x
-			in = true
-		} else if !on && in {
-			runs = append(runs, run{start, x - 1})
-			in = false
-		}
-	}
-	out := make([]struct{ x0, x1 int }, 0, len(runs))
-	for _, r := range runs {
-		if r.x1-r.x0+1 >= 2 {
-			out = append(out, struct{ x0, x1 int }{r.x0, r.x1})
-		}
-	}
-	if len(out) >= 2 {
-		return out
-	}
-	return nil
-}
-
-func renderDigitOn(im *bgra, d, originX, originY, scale int) {
-	if d < 0 || d > 9 || scale < 1 {
-		return
-	}
-	src := builtin5x7[d]
-	for y := 0; y < 7; y++ {
-		for x := 0; x < 5; x++ {
-			if src[y*5+x] != '1' {
-				continue
-			}
-			for dy := 0; dy < scale; dy++ {
-				for dx := 0; dx < scale; dx++ {
-					px := originX + x*scale + dx
-					py := originY + y*scale + dy
-					if px < 0 || py < 0 || px >= im.W || py >= im.H {
-						continue
-					}
-					i := py*im.Stride + px*4
-					im.Pix[i] = 255
-					im.Pix[i+1] = 255
-					im.Pix[i+2] = 255
-					im.Pix[i+3] = 255
-				}
-			}
-		}
-	}
-}
-
+// renderNumber 用解包出来的原始字形画一串数量，合成测试素材时用。
 func renderNumber(im *bgra, n, originX, originY, scale int) {
 	s := strconv.Itoa(n)
 	x := originX
 	for _, ch := range s {
-		renderDigitOn(im, int(ch-'0'), x, originY, scale)
-		x += 6 * scale
+		d := int(ch - '0')
+		drawGlyph(im, d, x, originY, scale)
+		x += glyphAdvance(d, scale)
 	}
+}
+
+// numberWidth 是 renderNumber 画出来的总宽度。
+func numberWidth(n, scale int) int {
+	w := 0
+	for _, ch := range strconv.Itoa(n) {
+		w += glyphAdvance(int(ch-'0'), scale)
+	}
+	if w > 0 {
+		w -= scale // 末位后面不留间距
+	}
+	return w
+}
+
+// numberHeight 是原始字形的行高。
+func numberHeight(scale int) int {
+	glyphs, err := nativeDigits()
+	if err != nil {
+		return 11 * scale
+	}
+	return glyphs[0].H * scale
 }

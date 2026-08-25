@@ -58,10 +58,6 @@ export function StopPotionWatch() {
   return window['go']['main']['App']['StopPotionWatch']();
 }
 
-export function TeachPotionDigits(arg1, arg2, arg3) {
-  return window['go']['main']['App']['TeachPotionDigits'](arg1, arg2, arg3);
-}
-
 export function UpdateOptions(arg1) {
   return window['go']['main']['App']['UpdateOptions'](arg1);
 }

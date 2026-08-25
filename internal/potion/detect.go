@@ -21,9 +21,10 @@ type calibration struct {
 	HPCol  ColorRange
 	MPCol  ColorRange
 
-	FrameW  int
-	FrameH  int
-	Digits  *digitBank
+	FrameW int
+	FrameH int
+	// Hint 只是读数时的字号缓存，不参与持久化。
+	Hint    *stencilHint
 	HPCount int
 	MPCount int
 }
@@ -33,19 +34,18 @@ func (c *calibration) view() CalibrationView {
 		return CalibrationView{}
 	}
 	v := CalibrationView{
-		HPSlot:        c.HPSlot,
-		MPSlot:        c.MPSlot,
-		HPBar:         c.HPBar,
-		MPBar:         c.MPBar,
-		HasHPSlot:     c.HPSlot.Valid() && c.HPTmpl.Img != nil,
-		HasMPSlot:     c.MPSlot.Valid() && c.MPTmpl.Img != nil,
-		HasHPBar:      c.HPBar.Valid(),
-		HasMPBar:      c.MPBar.Valid(),
-		FrameW:        c.FrameW,
-		FrameH:        c.FrameH,
-		HPCount:       c.HPCount,
-		MPCount:       c.MPCount,
-		LearnedDigits: c.Digits.coverage(),
+		HPSlot:    c.HPSlot,
+		MPSlot:    c.MPSlot,
+		HPBar:     c.HPBar,
+		MPBar:     c.MPBar,
+		HasHPSlot: c.HPSlot.Valid() && c.HPTmpl.Img != nil,
+		HasMPSlot: c.MPSlot.Valid() && c.MPTmpl.Img != nil,
+		HasHPBar:  c.HPBar.Valid(),
+		HasMPBar:  c.MPBar.Valid(),
+		FrameW:    c.FrameW,
+		FrameH:    c.FrameH,
+		HPCount:   c.HPCount,
+		MPCount:   c.MPCount,
 	}
 	if c.HPTmpl.Img != nil {
 		v.HPPreview = jpegThumb(c.HPTmpl.Img)
@@ -65,11 +65,8 @@ func (c *calibration) ready() bool {
 		c.HPBar.Valid() || c.MPBar.Valid()
 }
 
+// buildCalibration 按框选截下药槽模板，并顺手把画面上的数量读出来。
 func buildCalibration(frame *capture.RawFrame, spec CalibSpec) (*calibration, error) {
-	return buildCalibrationFrom(frame, spec, nil)
-}
-
-func buildCalibrationFrom(frame *capture.RawFrame, spec CalibSpec, prev *digitBank) (*calibration, error) {
 	if frame == nil || frame.Width <= 0 || frame.Height <= 0 {
 		return nil, fmt.Errorf("截图像素无效")
 	}
@@ -81,20 +78,16 @@ func buildCalibrationFrom(frame *capture.RawFrame, spec CalibSpec, prev *digitBa
 		return nil, fmt.Errorf("请至少框选一个药槽或血蓝条")
 	}
 
-	digits := newDigitBank()
-	digits.mergeFrom(prev)
 	c := &calibration{
-		HPSlot:  spec.HPSlot,
-		MPSlot:  spec.MPSlot,
-		HPBar:   spec.HPBar,
-		MPBar:   spec.MPBar,
-		HPCol:   presetRed,
-		MPCol:   presetBlue,
-		FrameW:  frame.Width,
-		FrameH:  frame.Height,
-		Digits:  digits,
-		HPCount: spec.HPCount,
-		MPCount: spec.MPCount,
+		HPSlot: spec.HPSlot,
+		MPSlot: spec.MPSlot,
+		HPBar:  spec.HPBar,
+		MPBar:  spec.MPBar,
+		HPCol:  presetRed,
+		MPCol:  presetBlue,
+		FrameW: frame.Width,
+		FrameH: frame.Height,
+		Hint:   newStencilHint(),
 	}
 
 	if spec.HPSlot.Valid() {
@@ -103,12 +96,9 @@ func buildCalibrationFrom(frame *capture.RawFrame, spec CalibSpec, prev *digitBa
 			return nil, fmt.Errorf("血药格截取失败")
 		}
 		c.HPTmpl = newSlotTemplate(im)
-		n := spec.HPCount
-		if n <= 0 {
-			n = readCount(im, c.Digits)
-		}
-		if n > 0 {
-			learnCount(im, n, c.Digits)
+		// 认出多少就记多少，作为开启监测时的基准数量；认不出来留 0。
+		if n := readCount(im, c.Hint); n > 0 {
+			c.HPCount = n
 		}
 	}
 	if spec.MPSlot.Valid() {
@@ -117,12 +107,8 @@ func buildCalibrationFrom(frame *capture.RawFrame, spec CalibSpec, prev *digitBa
 			return nil, fmt.Errorf("蓝药格截取失败")
 		}
 		c.MPTmpl = newSlotTemplate(im)
-		n := spec.MPCount
-		if n <= 0 {
-			n = readCount(im, c.Digits)
-		}
-		if n > 0 {
-			learnCount(im, n, c.Digits)
+		if n := readCount(im, c.Hint); n > 0 {
+			c.MPCount = n
 		}
 	}
 	if spec.HPBar.Valid() {
@@ -169,10 +155,6 @@ func jpegThumb(im *bgra) string {
 	return base64.StdEncoding.EncodeToString(buf.Bytes())
 }
 
-func analyzeFrame(frame *capture.RawFrame, cal *calibration, opts WatchOptions) (hp, mp slotSample) {
-	return analyzeFrameHint(frame, cal, opts, 0, 0)
-}
-
 func analyzeFrameHint(frame *capture.RawFrame, cal *calibration, opts WatchOptions, hpHint, mpHint int) (hp, mp slotSample) {
 	crop := func(r RelRect) *bgra {
 		if frame == nil {
@@ -195,10 +177,10 @@ func analyzeHint(crop func(RelRect) *bgra, cal *calibration, opts WatchOptions, 
 	}
 
 	if cal.HPSlot.Valid() && cal.HPTmpl.Img != nil {
-		hp = sampleSlot("hp", crop(cal.HPSlot), cal.HPTmpl, cal.Digits, opts, hpHint)
+		hp = sampleSlot("hp", crop(cal.HPSlot), cal.HPTmpl, cal.Hint, opts, hpHint)
 	}
 	if cal.MPSlot.Valid() && cal.MPTmpl.Img != nil {
-		mp = sampleSlot("mp", crop(cal.MPSlot), cal.MPTmpl, cal.Digits, opts, mpHint)
+		mp = sampleSlot("mp", crop(cal.MPSlot), cal.MPTmpl, cal.Hint, opts, mpHint)
 	}
 	if cal.HPBar.Valid() {
 		hp.bar = barFillRatio(crop(cal.HPBar), cal.HPCol)
@@ -209,12 +191,12 @@ func analyzeHint(crop func(RelRect) *bgra, cal *calibration, opts WatchOptions, 
 	return hp, mp
 }
 
-func sampleSlot(kind string, im *bgra, tmpl slotTemplate, bank *digitBank, opts WatchOptions, hint int) slotSample {
+func sampleSlot(kind string, im *bgra, tmpl slotTemplate, sh *stencilHint, opts WatchOptions, hint int) slotSample {
 	s := slotSample{kind: kind, raw: SlotAbsent, count: -1, bar: -1, reason: "slot"}
 	st, ncc := classifySlot(im, tmpl)
 	s.ncc = ncc
 	s.raw = st
-	n, score := readCountHint(im, bank, hint)
+	n, _ := readCountHint(im, sh, hint)
 	s.count = n
 	// 数量变化会改药格外观，模板 NCC 可能跌到 empty。读到数字就以数量为准。
 	if n > 0 {
@@ -222,10 +204,6 @@ func sampleSlot(kind string, im *bgra, tmpl slotTemplate, bank *digitBank, opts 
 		s.reason = "count"
 		if opts.LowCount > 0 && n <= opts.LowCount {
 			s.raw = SlotLow
-		}
-		// 误读成 8 时不要把 185 的字形学成个位 8。
-		if score >= 0.62 && (hint <= 0 || plausibleCount(hint, n) || n > hint) {
-			learnCount(im, n, bank)
 		}
 		return s
 	}

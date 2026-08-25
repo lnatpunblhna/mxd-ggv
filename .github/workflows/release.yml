@@ -1,0 +1,132 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的版本 tag（例如 v1.0.0），需已存在于仓库"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: "1.25"
+  NODE_VERSION: "22"
+  WAILS_VERSION: v2.15.0
+
+jobs:
+  release:
+    name: 发布 Windows 版本
+    runs-on: windows-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: 解析版本号
+        id: ver
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          # NSIS 的 VIProductVersion 只接受 x.y.z 数字版本，预发布后缀需剥离
+          NUM=$(echo "${TAG#v}" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+' || true)
+          if [ -z "$NUM" ]; then
+            echo "tag $TAG 不含 x.y.z 版本号，退回 0.0.0" >&2
+            NUM="0.0.0"
+          fi
+          echo "tag=$TAG"        >> "$GITHUB_OUTPUT"
+          echo "version=$NUM"    >> "$GITHUB_OUTPUT"
+          echo "发布 $TAG（产品版本 $NUM）"
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 确认 NSIS 可用
+        shell: bash
+        run: |
+          export PATH="$PATH:/c/Program Files (x86)/NSIS"
+          if ! command -v makensis >/dev/null 2>&1; then
+            echo "runner 未预装 NSIS，使用 choco 安装"
+            choco install nsis -y --no-progress
+          fi
+          makensis -VERSION || echo "makensis 版本查询失败，交由构建步骤兜底验证"
+
+      - name: 安装 wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
+
+      # 把 tag 版本写进 wails.json，让 exe 的文件属性和安装包版本与 tag 一致
+      - name: 注入版本信息
+        shell: bash
+        env:
+          PRODUCT_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          node -e "
+            const fs = require('fs');
+            const j = JSON.parse(fs.readFileSync('wails.json', 'utf8'));
+            j.info = Object.assign({}, j.info, {
+              productName: 'mxd',
+              productVersion: process.env.PRODUCT_VERSION,
+              companyName: 'mxd',
+              copyright: 'Copyright (c) 2026 ycy',
+            });
+            fs.writeFileSync('wails.json', JSON.stringify(j, null, 2) + '\n');
+          "
+          cat wails.json
+
+      - name: 安装前端依赖（锁定版本）
+        working-directory: frontend
+        run: npm ci
+
+      - name: 构建可执行文件与安装包
+        shell: bash
+        run: |
+          export PATH="$PATH:/c/Program Files (x86)/NSIS"
+          wails build -platform windows/amd64 -nsis -clean -trimpath -ldflags "-s -w"
+          ls -l build/bin
+
+      - name: 打包产物
+        id: pack
+        shell: bash
+        run: |
+          TAG="${{ steps.ver.outputs.tag }}"
+          BASE="mxd-${TAG}-windows-amd64"
+          mkdir -p dist
+          INSTALLER=$(ls build/bin/*installer*.exe | head -1)
+          if [ -z "$INSTALLER" ]; then
+            echo "未找到 NSIS 安装包" >&2
+            exit 1
+          fi
+          cp "$INSTALLER" "dist/${BASE}-installer.exe"
+          # 便携版 zip：解压即用
+          powershell -NoProfile -Command "Compress-Archive -Path 'build/bin/mxd.exe','README.md' -DestinationPath 'dist/${BASE}.zip' -Force"
+          (cd dist && sha256sum *.zip *.exe > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(steps.ver.outputs.tag, '-') }}
+          files: |
+            dist/${{ steps.pack.outputs.base }}.zip
+            dist/${{ steps.pack.outputs.base }}-installer.exe
+            dist/SHA256SUMS.txt

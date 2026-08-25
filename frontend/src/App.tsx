@@ -16,7 +16,6 @@ import {
     StopPotionWatch,
     PotionStatus,
     LoadPotionCalibration,
-    TeachPotionDigits,
 } from '../wailsjs/go/main/App';
 import {EventsOn} from '../wailsjs/runtime/runtime';
 import {petfeed, potion, vision} from '../wailsjs/go/models';
@@ -181,14 +180,13 @@ function App() {
     const [mpSlot, setMpSlot] = useState<Rel>(emptyRel);
     const [hpBar, setHpBar] = useState<Rel>(emptyRel);
     const [mpBar, setMpBar] = useState<Rel>(emptyRel);
-    const [hpCountInput, setHpCountInput] = useState('');
-    const [mpCountInput, setMpCountInput] = useState('');
+    const [hpCount, setHpCount] = useState(-1);
+    const [mpCount, setMpCount] = useState(-1);
     const [lowCount, setLowCount] = useState(10);
     const [potionSt, setPotionSt] = useState<potion.Status | null>(null);
     const [potionBusy, setPotionBusy] = useState(false);
     const [hpThumb, setHpThumb] = useState('');
     const [mpThumb, setMpThumb] = useState('');
-    const [learnedDigits, setLearnedDigits] = useState<number[]>([]);
     const [overlayBox, setOverlayBox] = useState<{left: number; top: number; w: number; h: number} | null>(null);
 
     const loopId = useRef(0);
@@ -300,15 +298,9 @@ function App() {
                 if (st.hotkey) setHotkey(st.hotkey);
             }
         });
-        PotionStatus().then(st => {
-            setPotionSt(st);
-            if (Array.isArray(st?.learnedDigits)) setLearnedDigits(st.learnedDigits);
-        }).catch(() => {});
+        PotionStatus().then(applyPotionStatus).catch(() => {});
         LoadPotionCalibration().then(applyCalibView).catch(() => {});
-        const offPotion = EventsOn('potion:status', (st: potion.Status) => {
-            setPotionSt(st);
-            if (Array.isArray(st?.learnedDigits)) setLearnedDigits(st.learnedDigits);
-        });
+        const offPotion = EventsOn('potion:status', applyPotionStatus);
         const offAlert = EventsOn('potion:alert', (al: potion.Alert) => {
             playAlertSound(al?.kind, al?.level);
         });
@@ -383,9 +375,16 @@ function App() {
         if (relValid(v.mpBar)) setMpBar(asRel(v.mpBar));
         if (v.hpPreview) setHpThumb(v.hpPreview);
         if (v.mpPreview) setMpThumb(v.mpPreview);
-        if ((v.hpCount ?? 0) > 0) setHpCountInput(String(v.hpCount));
-        if ((v.mpCount ?? 0) > 0) setMpCountInput(String(v.mpCount));
-        if (Array.isArray(v.learnedDigits)) setLearnedDigits(v.learnedDigits);
+        if ((v.hpCount ?? 0) > 0) setHpCount(v.hpCount);
+        if ((v.mpCount ?? 0) > 0) setMpCount(v.mpCount);
+    }
+
+    // 数量只由后端识别，前端不接受输入，识别不出来时保留上一次的读数。
+    function applyPotionStatus(st: potion.Status) {
+        setPotionSt(st);
+        if (!st) return;
+        if ((st.hp?.count ?? -1) >= 0) setHpCount(st.hp.count);
+        if ((st.mp?.count ?? -1) >= 0) setMpCount(st.mp.count);
     }
 
     function syncOverlay() {
@@ -592,64 +591,30 @@ function App() {
         window.addEventListener('mouseup', onUp);
     }
 
+    // calibrate 只做一件事：按当前框选截一帧，自动读出画面里的血药蓝药数量。
     async function calibrate() {
         if (!handle) {
             setError('请先选择窗口');
             return;
         }
-        if (!relValid(hpSlot) && !relValid(mpSlot) && !relValid(hpBar) && !relValid(mpBar)) {
-            setError('请先在预览中框选药槽或血蓝条');
-            return;
-        }
-        const hpN = hpCountInput.trim() === '' ? 0 : Number(hpCountInput);
-        const mpN = mpCountInput.trim() === '' ? 0 : Number(mpCountInput);
-        setPotionBusy(true);
-        try {
-            const view = await CalibratePotions(handle, {
-                hpSlot, mpSlot, hpBar, mpBar,
-                hpCount: Number.isInteger(hpN) && hpN > 0 ? hpN : 0,
-                mpCount: Number.isInteger(mpN) && mpN > 0 ? mpN : 0,
-            } as potion.CalibSpec);
-            applyCalibView(view);
-            const st = await PotionStatus();
-            setPotionSt(st);
-            if ((st?.hp?.count ?? -1) >= 0 && hpCountInput.trim() === '') {
-                setHpCountInput(String(st.hp.count));
-            }
-            if ((st?.mp?.count ?? -1) >= 0 && mpCountInput.trim() === '') {
-                setMpCountInput(String(st.mp.count));
-            }
-            setError('');
-        } catch (e: any) {
-            setError(String(e));
-        } finally {
-            setPotionBusy(false);
-        }
-    }
-
-    async function teachDigits() {
-        if (!handle) {
-            setError('请先选择窗口');
-            return;
-        }
-        const hpN = hpCountInput.trim() === '' ? 0 : Number(hpCountInput);
-        const mpN = mpCountInput.trim() === '' ? 0 : Number(mpCountInput);
-        if ((!Number.isInteger(hpN) || hpN <= 0) && (!Number.isInteger(mpN) || mpN <= 0)) {
-            setError('请填写药格上正在显示的数量，再点训练');
+        const hasSlot = relValid(hpSlot) || relValid(mpSlot);
+        if (!hasSlot && !relValid(hpBar) && !relValid(mpBar)) {
+            setError('还没框选。请先点上面的「血药格 / 蓝药格」，在画面里拖框选出药格再校准');
             return;
         }
         setPotionBusy(true);
         try {
-            const view = await TeachPotionDigits(
-                handle,
-                Number.isInteger(hpN) && hpN > 0 ? hpN : 0,
-                Number.isInteger(mpN) && mpN > 0 ? mpN : 0,
-            );
+            const view = await CalibratePotions(handle, {hpSlot, mpSlot, hpBar, mpBar} as potion.CalibSpec);
             applyCalibView(view);
-            const st = await PotionStatus();
-            setPotionSt(st);
-            if (Array.isArray(st?.learnedDigits)) setLearnedDigits(st.learnedDigits);
-            setError('');
+            applyPotionStatus(await PotionStatus());
+            const missHP = relValid(hpSlot) && !((view?.hpCount ?? 0) > 0);
+            const missMP = relValid(mpSlot) && !((view?.mpCount ?? 0) > 0);
+            if (missHP || missMP) {
+                const who = [missHP ? '血药' : '', missMP ? '蓝药' : ''].filter(Boolean).join('、');
+                setError(`没认出${who}数量。把药格框紧一点（只框住图标和数字）再校准一次`);
+            } else {
+                setError('');
+            }
         } catch (e: any) {
             setError(String(e));
         } finally {
@@ -880,7 +845,7 @@ function App() {
             <section className="pet-panel potion-panel">
                 <div className="pet-head">
                     <span className="pet-title">血药蓝药提醒</span>
-                    <span className="pet-hint">先框药槽并校准。0–9 要分开教：看药格上的数字，填进输入框，点「训练」。缺哪个字，就让画面上露出那个字再教一次。校准不会丢掉已学数字。</span>
+                    <span className="pet-hint">先框出血药格和蓝药格，再点「校准」自动读出画面里的数量。数量由程序识别，不用手填。</span>
                 </div>
                 <div className="pet-row">
                     {(['hpSlot', 'mpSlot', 'hpBar', 'mpBar'] as Exclude<SelMode, null>[]).map(m => (
@@ -895,25 +860,11 @@ function App() {
                 <div className="pet-row">
                     <label className="ctl">
                         <span>血药当前数量</span>
-                        <input
-                            type="number"
-                            min={0}
-                            step={1}
-                            value={hpCountInput}
-                            placeholder="画面上的数量"
-                            onChange={e => setHpCountInput(e.target.value)}
-                        />
+                        <input className="readonly" type="text" readOnly tabIndex={-1} value={countLabel(hpCount)}/>
                     </label>
                     <label className="ctl">
                         <span>蓝药当前数量</span>
-                        <input
-                            type="number"
-                            min={0}
-                            step={1}
-                            value={mpCountInput}
-                            placeholder="画面上的数量"
-                            onChange={e => setMpCountInput(e.target.value)}
-                        />
+                        <input className="readonly" type="text" readOnly tabIndex={-1} value={countLabel(mpCount)}/>
                     </label>
                     <label className="ctl">
                         <span>低量阈值</span>
@@ -927,23 +878,16 @@ function App() {
                             onChange={e => setLowCount(Math.max(0, Number(e.target.value) || 0))}
                         />
                     </label>
-                    <button className="btn" onClick={calibrate} disabled={potionBusy || watching || !handle}>校准</button>
-                    <button className="btn" onClick={teachDigits} disabled={potionBusy || !handle}>训练</button>
+                    <button
+                        className="btn"
+                        onClick={calibrate}
+                        disabled={potionBusy || watching || !handle}
+                        title="按当前框选自动读出画面里的血药蓝药数量"
+                    >校准</button>
                     {watching
                         ? <button className="btn danger" onClick={stopWatch} disabled={potionBusy}>关闭</button>
                         : <button className="btn primary" onClick={startWatch} disabled={potionBusy || !handle}>开启</button>}
                     <span className={'dot ' + (watching ? 'on' : 'off')} title={watching ? '监测中' : '未开启'}/>
-                </div>
-                <div className="digit-cover" title="绿色表示已经切过并保存过该数字的模板">
-                    <span>已学</span>
-                    {Array.from({length: 10}, (_, d) => (
-                        <i key={d} className={learnedDigits.includes(d) ? 'on' : ''}>{d}</i>
-                    ))}
-                    <span className="digit-miss">
-                        {learnedDigits.length >= 10
-                            ? '0–9 已齐'
-                            : '缺 ' + [0,1,2,3,4,5,6,7,8,9].filter(d => !learnedDigits.includes(d)).join(' ')}
-                    </span>
                 </div>
                 <div className="potion-thumbs">
                     {hpThumb && <img src={'data:image/jpeg;base64,' + hpThumb} alt="血药格" title="血药格模板"/>}

@@ -1,3 +1,6 @@
 build/bin
+build/windows/installer/tmp
 node_modules
 frontend/dist
+.claude
+/dist

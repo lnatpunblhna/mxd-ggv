@@ -71,19 +71,13 @@ func (s *Service) SetAlertEmitter(fn Alerter) {
 	s.mu.Unlock()
 }
 
-// Calibrate 按当前窗口截图保存药槽模板与血蓝条色域。
+// Calibrate 按当前窗口截图保存药槽模板与血蓝条色域，并自动读出画面里的数量。
 func (s *Service) Calibrate(handle uint64, spec CalibSpec) (CalibrationView, error) {
 	frame, err := s.grab(handle)
 	if err != nil {
 		return CalibrationView{}, err
 	}
-	s.mu.Lock()
-	var prev *digitBank
-	if s.cal != nil {
-		prev = s.cal.Digits.clone()
-	}
-	s.mu.Unlock()
-	cal, err := buildCalibrationFrom(frame, spec, prev)
+	cal, err := buildCalibration(frame, spec)
 	if err != nil {
 		return CalibrationView{}, err
 	}
@@ -95,99 +89,6 @@ func (s *Service) Calibrate(handle uint64, spec CalibSpec) (CalibrationView, err
 	s.cal = cal
 	s.status.LastError = ""
 	s.seedCountsLocked()
-	if spec.HPCount > 0 {
-		s.status.HP.Count = spec.HPCount
-		s.status.HP.State = SlotOK
-	}
-	if spec.MPCount > 0 {
-		s.status.MP.Count = spec.MPCount
-		s.status.MP.State = SlotOK
-	}
-	view := cal.view()
-	st := s.snapshotLocked()
-	s.mu.Unlock()
-	s.push(st)
-	return view, nil
-}
-
-// Teach 用用户填写的当前数量，把这一帧药格上的数字学进 0–9 模板。可反复调用，不会丢掉已学数字。
-func (s *Service) Teach(handle uint64, hpCount, mpCount int) (CalibrationView, error) {
-	if handle == 0 {
-		return CalibrationView{}, fmt.Errorf("请先选择窗口")
-	}
-	if hpCount <= 0 && mpCount <= 0 {
-		return CalibrationView{}, fmt.Errorf("请填写当前血药或蓝药数量")
-	}
-	s.mu.Lock()
-	cal := s.cal
-	if cal == nil || !cal.ready() {
-		s.mu.Unlock()
-		return CalibrationView{}, fmt.Errorf("请先框选药槽并校准")
-	}
-	hpSlot, mpSlot := cal.HPSlot, cal.MPSlot
-	fw, fh := cal.FrameW, cal.FrameH
-	hasHP := hpSlot.Valid() && cal.HPTmpl.Img != nil
-	hasMP := mpSlot.Valid() && cal.MPTmpl.Img != nil
-	bank := cal.Digits.clone()
-	s.mu.Unlock()
-
-	frame, err := s.grab(handle)
-	if err != nil {
-		return CalibrationView{}, err
-	}
-	if frame != nil {
-		fw, fh = frame.Width, frame.Height
-	}
-
-	taught := 0
-	if hpCount > 0 && hasHP {
-		im := cropFrame(frame, pixelRect(hpSlot, fw, fh))
-		taught += teachCount(im, hpCount, bank)
-	}
-	if mpCount > 0 && hasMP {
-		im := cropFrame(frame, pixelRect(mpSlot, fw, fh))
-		taught += teachCount(im, mpCount, bank)
-	}
-	if taught == 0 {
-		return CalibrationView{}, fmt.Errorf("没切出数字。请确认填写的数量和药格上一致，并把药格框紧一点")
-	}
-
-	s.mu.Lock()
-	if s.cal == nil {
-		s.mu.Unlock()
-		return CalibrationView{}, fmt.Errorf("请先框选药槽并校准")
-	}
-	s.cal.Digits.mergeFrom(bank)
-	if hpCount > 0 && hasHP {
-		s.cal.HPCount = hpCount
-	}
-	if mpCount > 0 && hasMP {
-		s.cal.MPCount = mpCount
-	}
-	cal = s.cal
-	s.mu.Unlock()
-	if err := saveCalibration(cal); err != nil {
-		return CalibrationView{}, fmt.Errorf("保存数字模板失败: %w", err)
-	}
-
-	s.mu.Lock()
-	s.status.LastError = ""
-	if hpCount > 0 {
-		s.status.HP.Count = hpCount
-		s.status.HP.State = SlotOK
-		s.status.HP.Reason = "teach"
-		if s.hpTrk != nil {
-			s.hpTrk.lastCount = hpCount
-		}
-	}
-	if mpCount > 0 {
-		s.status.MP.Count = mpCount
-		s.status.MP.State = SlotOK
-		s.status.MP.Reason = "teach"
-		if s.mpTrk != nil {
-			s.mpTrk.lastCount = mpCount
-		}
-	}
 	view := cal.view()
 	st := s.snapshotLocked()
 	s.mu.Unlock()
@@ -200,7 +101,7 @@ func (s *Service) seedCountsLocked() {
 		return
 	}
 	if s.cal.HPTmpl.Img != nil {
-		s.status.HP = statusFromTemplate(s.cal.HPTmpl.Img, s.cal.Digits)
+		s.status.HP = statusFromTemplate(s.cal.HPTmpl.Img, s.cal.Hint)
 		if s.cal.HPCount > 0 {
 			s.status.HP.Count = s.cal.HPCount
 			s.status.HP.State = SlotOK
@@ -208,7 +109,7 @@ func (s *Service) seedCountsLocked() {
 		}
 	}
 	if s.cal.MPTmpl.Img != nil {
-		s.status.MP = statusFromTemplate(s.cal.MPTmpl.Img, s.cal.Digits)
+		s.status.MP = statusFromTemplate(s.cal.MPTmpl.Img, s.cal.Hint)
 		if s.cal.MPCount > 0 {
 			s.status.MP.Count = s.cal.MPCount
 			s.status.MP.State = SlotOK
@@ -217,8 +118,8 @@ func (s *Service) seedCountsLocked() {
 	}
 }
 
-func statusFromTemplate(im *bgra, bank *digitBank) SlotStatus {
-	n := readCount(im, bank)
+func statusFromTemplate(im *bgra, sh *stencilHint) SlotStatus {
+	n := readCount(im, sh)
 	st := SlotStatus{State: SlotUnknown, Count: n, Bar: -1, Reason: "calib"}
 	if n >= 0 {
 		st.State = SlotOK
@@ -433,9 +334,6 @@ func (s *Service) snapshotLocked() Status {
 	st.LowCount = s.opts.LowCount
 	st.EmptyFrames = s.opts.EmptyFrames
 	st.CooldownSec = s.opts.CooldownSec
-	if s.cal != nil {
-		st.LearnedDigits = s.cal.Digits.coverage()
-	}
 	if !st.Enabled {
 		// 未运行时仍报告校准后的空状态，方便前端恢复框选。
 		if st.HP.State == "" {

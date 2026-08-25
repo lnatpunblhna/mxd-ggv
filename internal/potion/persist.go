@@ -17,16 +17,8 @@ type persisted struct {
 	MPCol   ColorRange `json:"mpCol"`
 	FrameW  int        `json:"frameW"`
 	FrameH  int        `json:"frameH"`
-	Digits  []pglyph   `json:"digits"`
 	HPCount int        `json:"hpCount,omitempty"`
 	MPCount int        `json:"mpCount,omitempty"`
-}
-
-type pglyph struct {
-	Digit int    `json:"digit"`
-	W     int    `json:"w,omitempty"`
-	H     int    `json:"h,omitempty"`
-	Bits  string `json:"bits"`
 }
 
 var calibDirFn = defaultCalibDir
@@ -63,21 +55,6 @@ func saveCalibration(c *calibration) error {
 		FrameH:  c.FrameH,
 		HPCount: c.HPCount,
 		MPCount: c.MPCount,
-	}
-	if c.Digits != nil {
-		for d := 0; d <= 9; d++ {
-			for _, g := range c.Digits.learned[d] {
-				bits := make([]byte, len(g.Bits))
-				for i, on := range g.Bits {
-					if on {
-						bits[i] = '1'
-					} else {
-						bits[i] = '0'
-					}
-				}
-				doc.Digits = append(doc.Digits, pglyph{Digit: d, W: g.W, H: g.H, Bits: string(bits)})
-			}
-		}
 	}
 	raw, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
@@ -128,7 +105,7 @@ func loadCalibration() (*calibration, error) {
 		MPCol:   doc.MPCol,
 		FrameW:  doc.FrameW,
 		FrameH:  doc.FrameH,
-		Digits:  newDigitBank(),
+		Hint:    newStencilHint(),
 		HPCount: doc.HPCount,
 		MPCount: doc.MPCount,
 	}
@@ -143,23 +120,6 @@ func loadCalibration() (*calibration, error) {
 	}
 	if mp, err := readPNG(filepath.Join(dir, "mp.png")); err == nil && mp != nil {
 		c.MPTmpl = newSlotTemplate(mp)
-	}
-	for _, g := range doc.Digits {
-		if g.Digit < 0 || g.Digit > 9 {
-			continue
-		}
-		w, h := g.W, g.H
-		if w <= 0 || h <= 0 {
-			w, h = 8, 12
-		}
-		if w*h != len(g.Bits) {
-			continue
-		}
-		bits := make([]bool, len(g.Bits))
-		for i, ch := range g.Bits {
-			bits[i] = ch == '1'
-		}
-		c.Digits.learn(g.Digit, digitTmpl{Digit: g.Digit, W: w, H: h, Bits: bits})
 	}
 	if !c.ready() {
 		return nil, nil

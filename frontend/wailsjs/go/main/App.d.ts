@@ -32,6 +32,4 @@ export function StopPetFeed():Promise<void>;
 
 export function StopPotionWatch():Promise<void>;
 
-export function TeachPotionDigits(arg1:number,arg2:number,arg3:number):Promise<potion.CalibrationView>;
-
 export function UpdateOptions(arg1:vision.Options):Promise<void>;

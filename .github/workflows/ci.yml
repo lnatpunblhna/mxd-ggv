@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 同一分支/PR 上新的 push 会取消仍在跑的旧任务
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.25"
+  NODE_VERSION: "22"
+  WAILS_VERSION: v2.15.0
+
+jobs:
+  build:
+    name: 构建与测试 (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 安装前端依赖
+        working-directory: frontend
+        run: npm ci
+
+      # main.go 用 //go:embed all:frontend/dist，dist 不存在时 go vet/test 无法编译
+      - name: 构建前端 (tsc + vite)
+        working-directory: frontend
+        run: npm run build
+
+      - name: 检查 gofmt
+        shell: bash
+        run: |
+          unformatted=$(git ls-files '*.go' | xargs gofmt -l)
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未格式化，请运行 gofmt -w ：" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+
+      # Windows syscall 代码里 unsafe.Pointer 转换是必要写法，unsafeptr 检查会误报
+      - name: go vet
+        run: go vet -unsafeptr=false ./...
+
+      - name: go test
+        run: go test ./... -count=1
+
+      - name: 缓存 wails CLI
+        id: wails-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/go/bin/wails.exe
+          key: wails-${{ runner.os }}-${{ env.WAILS_VERSION }}-go${{ env.GO_VERSION }}
+
+      - name: 安装 wails CLI
+        if: steps.wails-cache.outputs.cache-hit != 'true'
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
+
+      - name: wails build
+        run: wails build -platform windows/amd64 -trimpath -ldflags "-s -w"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: mxd-windows-amd64-${{ github.sha }}
+          path: build/bin/mxd.exe
+          retention-days: 7
+          if-no-files-found: error

@@ -76,8 +76,6 @@ export namespace potion {
 	    mpSlot: RelRect;
 	    hpBar: RelRect;
 	    mpBar: RelRect;
-	    hpCount: number;
-	    mpCount: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new CalibSpec(source);
@@ -89,8 +87,6 @@ export namespace potion {
 	        this.mpSlot = this.convertValues(source["mpSlot"], RelRect);
 	        this.hpBar = this.convertValues(source["hpBar"], RelRect);
 	        this.mpBar = this.convertValues(source["mpBar"], RelRect);
-	        this.hpCount = source["hpCount"];
-	        this.mpCount = source["mpCount"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -126,7 +122,6 @@ export namespace potion {
 	    mpPreview: string;
 	    hpCount: number;
 	    mpCount: number;
-	    learnedDigits?: number[];
 	
 	    static createFrom(source: any = {}) {
 	        return new CalibrationView(source);
@@ -148,7 +143,6 @@ export namespace potion {
 	        this.mpPreview = source["mpPreview"];
 	        this.hpCount = source["hpCount"];
 	        this.mpCount = source["mpCount"];
-	        this.learnedDigits = source["learnedDigits"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -210,7 +204,6 @@ export namespace potion {
 	    lowCount: number;
 	    emptyFrames: number;
 	    cooldownSec: number;
-	    learnedDigits?: number[];
 	
 	    static createFrom(source: any = {}) {
 	        return new Status(source);
@@ -237,7 +230,6 @@ export namespace potion {
 	        this.lowCount = source["lowCount"];
 	        this.emptyFrames = source["emptyFrames"];
 	        this.cooldownSec = source["cooldownSec"];
-	        this.learnedDigits = source["learnedDigits"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

@@ -149,57 +149,7 @@ func quantityInkAt(im *bgra, x, y int) bool {
 	if isYellowInk(h, s, l) {
 		return true
 	}
-	return isWhiteInk(s, l) && nearDark(im, x, y, l)
-}
-
-func nccGrayWindow(hay, tmpl *bgra, ox, oy int) float64 {
-	if hay == nil || tmpl == nil || tmpl.empty() || hay.empty() {
-		return 0
-	}
-	if ox < 0 || oy < 0 || ox+tmpl.W > hay.W || oy+tmpl.H > hay.H {
-		return 0
-	}
-	n := tmpl.W * tmpl.H
-	if n < 4 {
-		return 0
-	}
-	var sumA, sumB float64
-	for y := 0; y < tmpl.H; y++ {
-		hp := hay.Pix[(oy+y)*hay.Stride+ox*4:]
-		tp := tmpl.Pix[y*tmpl.Stride:]
-		for x := 0; x < tmpl.W; x++ {
-			si, ti := x*4, x*4
-			sumA += luminance(hp[si], hp[si+1], hp[si+2])
-			sumB += luminance(tp[ti], tp[ti+1], tp[ti+2])
-		}
-	}
-	meanA := sumA / float64(n)
-	meanB := sumB / float64(n)
-	var num, denA, denB float64
-	for y := 0; y < tmpl.H; y++ {
-		hp := hay.Pix[(oy+y)*hay.Stride+ox*4:]
-		tp := tmpl.Pix[y*tmpl.Stride:]
-		for x := 0; x < tmpl.W; x++ {
-			si, ti := x*4, x*4
-			da := luminance(hp[si], hp[si+1], hp[si+2]) - meanA
-			db := luminance(tp[ti], tp[ti+1], tp[ti+2]) - meanB
-			num += da * db
-			denA += da * da
-			denB += db * db
-		}
-	}
-	den := math.Sqrt(denA * denB)
-	if den < 1e-9 {
-		return 0
-	}
-	v := num / den
-	if v < 0 {
-		return 0
-	}
-	if v > 1 {
-		return 1
-	}
-	return v
+	return isCountInk(h, s, l) && nearDark(im, x, y, l)
 }
 
 func nccGray(a, b *bgra) float64 {

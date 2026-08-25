@@ -110,14 +110,9 @@ func (a *App) IsElevated() bool {
 	return petfeed.IsElevated()
 }
 
-// CalibratePotions 按当前画面截取药槽模板和血蓝条色域。
+// CalibratePotions 按当前画面截取药槽模板和血蓝条色域，并自动读出画面里的血药蓝药数量。
 func (a *App) CalibratePotions(handle uint64, spec potion.CalibSpec) (potion.CalibrationView, error) {
 	return a.potion.Calibrate(handle, spec)
-}
-
-// TeachPotionDigits 用填写的当前数量训练 0–9 模板，可反复调用。
-func (a *App) TeachPotionDigits(handle uint64, hpCount, mpCount int) (potion.CalibrationView, error) {
-	return a.potion.Teach(handle, hpCount, mpCount)
 }
 
 // StartPotionWatch 开启血药蓝药监测。

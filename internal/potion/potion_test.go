@@ -60,176 +60,95 @@ func TestClassifySlot(t *testing.T) {
 	}
 }
 
-func TestLearnRealMapleCount(t *testing.T) {
-	mp, err := readPNG(filepath.Join("testdata", "mp.png"))
+func TestNativeGlyphAssets(t *testing.T) {
+	glyphs, err := nativeDigits()
 	if err != nil {
 		t.Fatal(err)
 	}
-	hp, err := readPNG(filepath.Join("testdata", "hp.png"))
-	if err != nil {
-		t.Fatal(err)
+	for d, g := range glyphs {
+		if g.Digit != d {
+			t.Errorf("digit %d: Digit=%d", d, g.Digit)
+		}
+		if g.W < 4 || g.H != 11 {
+			t.Errorf("digit %d: %dx%d, want 11 高", d, g.W, g.H)
+		}
+		core, edge := 0, 0
+		for i := range g.Core {
+			if g.Core[i] {
+				core++
+			}
+			if g.Edge[i] {
+				edge++
+			}
+		}
+		if core < 8 || edge < 8 {
+			t.Errorf("digit %d: 字身 %d 描边 %d，像素太少", d, core, edge)
+		}
 	}
-	bank := newDigitBank()
-	learnCount(hp, 1, bank)
-	learnCount(mp, 343, bank)
-	if got := readCount(hp, bank); got != 1 {
-		t.Errorf("after learn, hp = %d, want 1", got)
-		dumpCountDebug(t, "hp-learned", hp, bank)
-	}
-	if got := readCount(mp, bank); got != 343 {
-		t.Errorf("after learn, mp = %d, want 343", got)
-		dumpCountDebug(t, "mp-learned", mp, bank)
-	}
-}
-
-func TestReadCountWhitePotion188(t *testing.T) {
-	hp, err := readPNG(filepath.Join("testdata", "hp188.png"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	mp, err := readPNG(filepath.Join("testdata", "mp341.png"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	bank := newDigitBank()
-	learnCount(hp, 188, bank)
-	learnCount(mp, 341, bank)
-	if got := readCount(hp, bank); got != 188 {
-		t.Errorf("after learn, hp188 = %d, want 188", got)
-		dumpCountDebug(t, "hp188-learned", hp, bank)
-	}
-	if got := readCount(mp, bank); got != 341 {
-		t.Errorf("after learn, mp341 = %d, want 341", got)
-		dumpCountDebug(t, "mp341-learned", mp, bank)
-	}
-}
-
-func TestMapleNativeSpecs(t *testing.T) {
-	for i, sp := range mapleNative {
-		if sp.w*sp.h != len(sp.bits) {
-			t.Errorf("mapleNative[%d] digit %d %dx%d bits=%d", i, sp.d, sp.w, sp.h, len(sp.bits))
+	// 每个数字都要能建出可用模板，1x-3x 都不能塌。
+	for d := 0; d <= 9; d++ {
+		if len(builtins()[d]) == 0 {
+			t.Errorf("digit %d 没有内置模板", d)
+		}
+		for scale := 1; scale <= 3; scale++ {
+			tm := glyphs[d].scaledTmpl(scale)
+			if !tm.usable() {
+				t.Errorf("digit %d scale %d 模板不可用 (%dx%d)", d, scale, tm.W, tm.H)
+			}
 		}
 	}
 }
 
+// TestBuiltinsSeparateDigits 保证原始字形之间不会互相混淆。
+func TestBuiltinsSeparateDigits(t *testing.T) {
+	glyphs, err := nativeDigits()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for d := 0; d <= 9; d++ {
+		g := glyphs[d].scaledTmpl(2)
+		got, score := classifyGlyph(g)
+		if got != d {
+			t.Errorf("原始字形 %d 被认成 %d (score=%.3f)", d, got, score)
+		}
+	}
+}
+
+// TestSegmentMapleSlots 走的是原始字形认不出来时的兜底分割路径。
 func TestSegmentMapleSlots(t *testing.T) {
 	cases := []struct {
-		file  string
-		want  int
-		learn bool
+		file string
+		want int
 	}{
-		{"hp.png", 1, false},
-		{"mp.png", 343, false},
-		{"hp188.png", 188, false},
-		{"mp341.png", 341, true},
+		{"hp.png", 1},
+		{"mp.png", 343},
+		{"hp188.png", 188},
+		{"mp341.png", 341},
 	}
 	for _, c := range cases {
 		im, err := readPNG(filepath.Join("testdata", c.file))
 		if err != nil {
 			t.Fatal(err)
 		}
-		bank := newDigitBank()
-		if c.learn {
-			learnCount(im, c.want, bank)
-		}
 		region := countRegion(im)
-		hits := readBySegment(region, bank)
+		hits := readBySegment(region)
 		n, score, _ := assembleHits(hits)
-		t.Logf("%s segment=%d score=%.3f hits=%d want %d learn=%v", c.file, n, score, len(hits), c.want, c.learn)
+		t.Logf("%s segment=%d score=%.3f hits=%d want %d", c.file, n, score, len(hits), c.want)
 		for i, h := range hits {
 			t.Logf("  hit%d d=%d s=%.3f at (%d,%d) %dx%d", i, h.d, h.s, h.x, h.y, h.w, h.h)
 		}
-		if got := readCount(im, bank); got != c.want {
+		if got := readCount(im, newStencilHint()); got != c.want {
 			t.Errorf("%s readCount=%d want %d (segment=%d)", c.file, got, c.want, n)
 		}
 	}
 }
 
-func TestTeachAccumulatesDigits(t *testing.T) {
-	hp, err := readPNG(filepath.Join("testdata", "hp188.png"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	mp, err := readPNG(filepath.Join("testdata", "mp341.png"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	bank := newDigitBank()
-	if n := teachCount(hp, 188, bank); n == 0 {
-		t.Fatal("188 should teach 1 and 8")
-	}
-	if n := teachCount(mp, 341, bank); n == 0 {
-		t.Fatal("341 should teach 3, 4, 1")
-	}
-	have := map[int]bool{}
-	for _, d := range bank.coverage() {
-		have[d] = true
-	}
-	for _, d := range []int{1, 3, 4, 8} {
-		if !have[d] {
-			t.Errorf("missing digit %d, have %v", d, bank.coverage())
-		}
-	}
-	if got := readCount(hp, bank); got != 188 {
-		t.Errorf("after merge hp188=%d want 188", got)
-	}
-	if got := readCount(mp, bank); got != 341 {
-		t.Errorf("after merge mp341=%d want 341", got)
-	}
-}
-
-func TestCalibrateKeepsPreviousDigits(t *testing.T) {
-	hp, err := readPNG(filepath.Join("testdata", "hp188.png"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	prev := newDigitBank()
-	if teachCount(hp, 188, prev) == 0 {
-		t.Fatal("need 188 templates")
-	}
-	frame := mixedFrame()
-	cal, err := buildCalibrationFrom(frame, CalibSpec{
-		HPSlot:  RelRect{X: 0.05, Y: 0.50, W: 0.16, H: 0.32},
-		HPCount: 8,
-	}, prev)
-	if err != nil {
-		t.Fatal(err)
-	}
-	have := map[int]bool{}
-	for _, d := range cal.Digits.coverage() {
-		have[d] = true
-	}
-	if !have[1] || !have[8] {
-		t.Fatalf("recalibrate wiped digits, have %v", cal.Digits.coverage())
-	}
-}
-
-func TestReadCountRealMapleSlots(t *testing.T) {
-	hp, err := readPNG(filepath.Join("testdata", "hp.png"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	mp, err := readPNG(filepath.Join("testdata", "mp.png"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	bank := newDigitBank()
-	if got := readCount(hp, bank); got != 1 {
-		t.Errorf("hp.png count = %d, want 1", got)
-		dumpCountDebug(t, "hp", hp, bank)
-	}
-	if got := readCount(mp, bank); got != 343 {
-		t.Errorf("mp.png count = %d, want 343", got)
-		dumpCountDebug(t, "mp", mp, bank)
-	}
-}
-
-func dumpCountDebug(t *testing.T, name string, im *bgra, bank *digitBank) {
+func dumpCountDebug(t *testing.T, name string, im *bgra, sh *stencilHint) {
 	t.Helper()
-	n, s := readCountScore(im, bank)
+	n, s := readCountScore(im, sh)
 	t.Logf("%s readCountScore n=%d score=%.3f", name, n, s)
 	region := countRegion(im)
-	hits := matchRegion(region, bank)
+	hits := matchRegion(region, sh)
 	t.Logf("%s region=%dx%d hits=%d", name, region.W, region.H, len(hits))
 	for i, h := range hits {
 		t.Logf("  hit%d d=%d s=%.3f at (%d,%d) %dx%d", i, h.d, h.s, h.x, h.y, h.w, h.h)
@@ -237,30 +156,19 @@ func dumpCountDebug(t *testing.T, name string, im *bgra, bank *digitBank) {
 }
 
 func TestReadCount(t *testing.T) {
-	for n := 0; n <= 9; n++ {
+	for n := 1; n <= 9; n++ {
 		im := potionSlot(n)
-		got := readCount(im, newDigitBank())
-		if n == 0 {
-			continue
-		}
-		if got != n {
+		if got := readCount(im, newStencilHint()); got != n {
 			t.Errorf("digit %d read as %d", n, got)
-			dumpCountDebug(t, "synth"+strconv.Itoa(n), im, newDigitBank())
+			dumpCountDebug(t, "synth"+strconv.Itoa(n), im, newStencilHint())
 		}
 	}
-	im := potionSlot(86)
-	if got := readCount(im, newDigitBank()); got != 86 {
-		dumpCountDebug(t, "synth86", im, newDigitBank())
-		t.Fatalf("86 read as %d", got)
-	}
-}
-
-func TestLearnCountHelps(t *testing.T) {
-	bank := newDigitBank()
-	im := potionSlot(73)
-	learnCount(im, 73, bank)
-	if got := readCount(im, bank); got != 73 {
-		t.Fatalf("after learn, 73 read as %d", got)
+	for _, n := range []int{73, 86} {
+		im := potionSlot(n)
+		if got := readCount(im, newStencilHint()); got != n {
+			dumpCountDebug(t, "synth"+strconv.Itoa(n), im, newStencilHint())
+			t.Errorf("%d read as %d", n, got)
+		}
 	}
 }
 
@@ -494,13 +402,10 @@ func TestTrackerLowCount(t *testing.T) {
 func TestAnalyzeCountFollowsChange(t *testing.T) {
 	a := potionSlot(50)
 	b := potionSlot(41)
-	bank := newDigitBank()
-	learnCount(a, 50, bank)
-	learnCount(b, 41, bank)
 	cal := &calibration{
 		HPSlot: RelRect{X: 0, Y: 0, W: 1, H: 1},
 		HPTmpl: newSlotTemplate(a),
-		Digits: bank,
+		Hint:   newStencilHint(),
 	}
 	opts := WatchOptions{LowCount: 10}.normalize()
 	hp, _ := analyze(func(RelRect) *bgra { return a }, cal, opts)
@@ -518,7 +423,7 @@ func TestAnalyzeEmptyAndLow(t *testing.T) {
 	cal := &calibration{
 		HPSlot: RelRect{X: 0, Y: 0, W: 1, H: 1},
 		HPTmpl: newSlotTemplate(icon),
-		Digits: newDigitBank(),
+		Hint:   newStencilHint(),
 	}
 	opts := WatchOptions{LowCount: 10}.normalize()
 
@@ -529,7 +434,6 @@ func TestAnalyzeEmptyAndLow(t *testing.T) {
 
 	low := potionSlot(5)
 	cal.HPTmpl = newSlotTemplate(low)
-	learnCount(low, 5, cal.Digits)
 	hp, _ = analyze(func(RelRect) *bgra { return low }, cal, opts)
 	if hp.raw != SlotLow && hp.count != 5 {
 		// 数量识别成功则应为 low；识别失败则至少是 ok
@@ -551,10 +455,9 @@ func TestBuildCalibrationAndPersist(t *testing.T) {
 
 	frame := mixedFrame()
 	cal, err := buildCalibration(frame, CalibSpec{
-		HPSlot:  RelRect{X: 0.05, Y: 0.50, W: 0.16, H: 0.32},
-		MPSlot:  RelRect{X: 0.25, Y: 0.50, W: 0.16, H: 0.32},
-		HPBar:   RelRect{X: 0.05, Y: 0.88, W: 0.40, H: 0.08},
-		HPCount: 8,
+		HPSlot: RelRect{X: 0.05, Y: 0.50, W: 0.16, H: 0.32},
+		MPSlot: RelRect{X: 0.25, Y: 0.50, W: 0.16, H: 0.32},
+		HPBar:  RelRect{X: 0.05, Y: 0.88, W: 0.40, H: 0.08},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -562,6 +465,7 @@ func TestBuildCalibrationAndPersist(t *testing.T) {
 	if !cal.ready() || cal.HPTmpl.Img == nil || cal.MPTmpl.Img == nil {
 		t.Fatal("calibration incomplete")
 	}
+	cal.HPCount = 8 // 这张合成图的药格上没有数字，手动塞一个值验证落盘
 	if err := saveCalibration(cal); err != nil {
 		t.Fatal(err)
 	}
@@ -577,13 +481,37 @@ func TestBuildCalibrationAndPersist(t *testing.T) {
 	}
 }
 
+// TestCalibrateReadsCountFromFrame 校准必须自己把画面上的数量读出来，不靠任何预先学习。
+func TestCalibrateReadsCountFromFrame(t *testing.T) {
+	cases := []struct {
+		file string
+		want int
+	}{
+		{"hp188.png", 188},
+		{"mp341.png", 341},
+		{"mp339.png", 339},
+		{"hp163.png", 163},
+	}
+	for _, c := range cases {
+		im, err := readPNG(filepath.Join("testdata", c.file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cal, err := buildCalibration(bgraFrame(im), CalibSpec{HPSlot: RelRect{W: 1, H: 1}})
+		if err != nil {
+			t.Fatalf("%s: %v", c.file, err)
+		}
+		if cal.HPCount != c.want {
+			t.Errorf("%s 校准读出 %d，期望 %d", c.file, cal.HPCount, c.want)
+		}
+	}
+}
+
 func TestServiceKeepsCalibratedCount(t *testing.T) {
 	hp, err := readPNG(filepath.Join("testdata", "hp188.png"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	bank := newDigitBank()
-	learnCount(hp, 188, bank)
 	s := New()
 	s.grab = func(uint64) (*capture.RawFrame, error) {
 		return bgraFrame(hp), nil
@@ -591,7 +519,7 @@ func TestServiceKeepsCalibratedCount(t *testing.T) {
 	s.cal = &calibration{
 		HPSlot:  RelRect{X: 0, Y: 0, W: 1, H: 1},
 		HPTmpl:  newSlotTemplate(hp),
-		Digits:  bank,
+		Hint:    newStencilHint(),
 		HPCount: 188,
 		FrameW:  hp.W, FrameH: hp.H,
 	}
@@ -626,7 +554,7 @@ func TestServiceDetectsEmpty(t *testing.T) {
 	s.cal = &calibration{
 		HPSlot: RelRect{X: 0, Y: 0, W: 1, H: 1},
 		HPTmpl: newSlotTemplate(icon),
-		Digits: newDigitBank(),
+		Hint:   newStencilHint(),
 		FrameW: 28, FrameH: 28,
 	}
 
@@ -663,19 +591,11 @@ func bgraFrame(im *bgra) *capture.RawFrame {
 }
 
 func potionSlot(n int) *bgra {
-	im := checker(40, 40, 25, 40, 210, 50, 160, 45)
+	im := checker(48, 48, 25, 40, 210, 50, 160, 45)
 	if n > 0 {
 		s := 2
-		digits := 1
-		if n >= 10 {
-			digits = 2
-		}
-		if n >= 100 {
-			digits = 3
-		}
-		w := digits*6*s - s
-		x := im.W - w - 1
-		y := im.H - 7*s - 1
+		x := im.W - numberWidth(n, s) - 1
+		y := im.H - numberHeight(s) - 1
 		renderNumber(im, n, x, y, s)
 	}
 	return im

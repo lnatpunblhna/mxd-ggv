@@ -203,6 +203,21 @@
     width: 72px;
 }
 
+/* 只读数量：由校准/监测填，手动改不了。 */
+.ctl input.readonly {
+    width: 72px;
+    text-align: center;
+    color: #9aa7b4;
+    background: #0d141d;
+    border-style: dashed;
+    cursor: default;
+    font-variant-numeric: tabular-nums;
+}
+
+.ctl input.readonly:focus {
+    outline: none;
+}
+
 .ctl input.hotkey {
     width: 140px;
     cursor: pointer;
@@ -416,39 +431,6 @@
 .btn.pick.active {
     background: #1f6feb;
     border-color: #1f6feb;
-}
-
-.digit-cover {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    flex-wrap: wrap;
-    font-size: 12px;
-    color: #9aa7b4;
-}
-
-.digit-cover i {
-    width: 22px;
-    height: 22px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 4px;
-    border: 1px solid #3a4a5e;
-    background: #131c28;
-    color: #6e7a88;
-    font-style: normal;
-    font-variant-numeric: tabular-nums;
-}
-
-.digit-cover i.on {
-    border-color: #3fb950;
-    background: #16351f;
-    color: #3fb950;
-}
-
-.digit-miss {
-    color: #9aa7b4;
 }
 
 .potion-thumbs {

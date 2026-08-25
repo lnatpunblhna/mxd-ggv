@@ -3,9 +3,9 @@ package potion
 import "sort"
 
 const (
-	segLumaMin = 185.0
-	segSatMax  = 0.55
-	classMin   = 0.66
+	classMin = 0.66
+	// antiWeight 是描边扣分的力度：亮点全落在描边上时最多扣掉这么多分。
+	antiWeight = 0.55
 )
 
 // digitMask 把数量字从药格里抠出来：灰度 + 二值化（描边白字或黄色字）。
@@ -25,7 +25,7 @@ func digitMask(im *bgra) ([]bool, int, int) {
 				mask[y*w+x] = true
 				continue
 			}
-			if l < segLumaMin || s > segSatMax {
+			if !isCountInk(hh, s, l) {
 				continue
 			}
 			if nearDark(im, x, y, l) || nearDarkRad(im, x, y, l, 2) {
@@ -93,7 +93,7 @@ func closeMask(mask []bool, w, h int) {
 }
 
 // readBySegment 按轮廓分割单个数字，再和 0–9 模板做像素匹配。
-func readBySegment(im *bgra, bank *digitBank) []tmplHit {
+func readBySegment(im *bgra) []tmplHit {
 	mask, w, h := digitMask(im)
 	if w < 6 || h < 8 {
 		return nil
@@ -102,7 +102,7 @@ func readBySegment(im *bgra, bank *digitBank) []tmplHit {
 	if len(parts) == 0 {
 		return nil
 	}
-	hits := classifyParts(mask, w, parts, bank)
+	hits := classifyParts(mask, w, parts)
 	if !segmentConfident(hits) {
 		return nil
 	}
@@ -499,7 +499,7 @@ func offsetParts(parts []tmplHit, dx, dy int) []tmplHit {
 	return out
 }
 
-func classifyParts(mask []bool, w int, parts []tmplHit, bank *digitBank) []tmplHit {
+func classifyParts(mask []bool, w int, parts []tmplHit) []tmplHit {
 	hits := make([]tmplHit, 0, len(parts))
 	for _, p := range parts {
 		g := tightFromMask(mask, w, p.x, p.y, p.x+p.w-1, p.y+p.h-1, 0)
@@ -507,7 +507,7 @@ func classifyParts(mask []bool, w int, parts []tmplHit, bank *digitBank) []tmplH
 		if g.H < 6 || g.NInk < 4 || g.W < 2 {
 			return nil
 		}
-		d, s := classifyGlyph(g, bank)
+		d, s := classifyGlyph(g)
 		if d == 1 && g.W*2 > g.H {
 			s = 0
 			d = -1
@@ -520,32 +520,20 @@ func classifyParts(mask []bool, w int, parts []tmplHit, bank *digitBank) []tmplH
 	return hits
 }
 
-func classifyGlyph(g digitTmpl, bank *digitBank) (digit int, score float64) {
+func classifyGlyph(g digitTmpl) (digit int, score float64) {
 	g.ensure()
 	bestD, bestS := -1, -1.0
 	for d := 0; d <= 9; d++ {
 		best := 0.0
-		learned := false
 		for _, t := range builtins()[d] {
 			if s := glyphScore(g, t); s > best {
 				best = s
-			}
-		}
-		if bank != nil {
-			for _, t := range bank.learned[d] {
-				if s := glyphScore(g, t); s > best {
-					best = s
-					learned = true
-				}
 			}
 		}
 		if best < 0.40 {
 			continue
 		}
 		best += topologyBonus(g, d)
-		if learned {
-			best += 0.04
-		}
 		if best > bestS {
 			bestS = best
 			bestD = d
@@ -582,22 +570,6 @@ func bottomLR(g digitTmpl) (left, right int) {
 	return
 }
 
-func shapeFitsDigit(g digitTmpl, d int) bool {
-	left, right := bottomLR(g)
-	switch d {
-	case 0:
-		// 右下竖脚是 9，不能学成 0。
-		if right >= left*2 && right >= 4 && g.H >= 10 {
-			return false
-		}
-	case 6:
-		if right >= left*2 && right >= 4 && g.H >= 10 {
-			return false
-		}
-	}
-	return true
-}
-
 func topologyBonus(g digitTmpl, d int) float64 {
 	left, right := bottomLR(g)
 	switch d {
@@ -632,14 +604,15 @@ func glyphScore(a, b digitTmpl) float64 {
 	if a.NInk < 3 || b.NInk < 3 {
 		return 0
 	}
-	best := bitsDice(a.Bits, a.W, a.H, b.Bits, b.W, b.H)
+	best := bitsDice(a.Bits, a.W, a.H, b.Bits, b.W, b.H, b.Anti)
 	if a.W != b.W || a.H != b.H {
 		ra := resizeBits(a.Bits, a.W, a.H, b.W, b.H)
-		if s := bitsDice(ra, b.W, b.H, b.Bits, b.W, b.H); s > best {
+		if s := bitsDice(ra, b.W, b.H, b.Bits, b.W, b.H, b.Anti); s > best {
 			best = s
 		}
 		rb := resizeBits(b.Bits, b.W, b.H, a.W, a.H)
-		if s := bitsDice(a.Bits, a.W, a.H, rb, a.W, a.H); s > best {
+		ranti := resizeBits(b.Anti, b.W, b.H, a.W, a.H)
+		if s := bitsDice(a.Bits, a.W, a.H, rb, a.W, a.H, ranti); s > best {
 			best = s
 		}
 	}
@@ -659,9 +632,20 @@ func glyphScore(a, b digitTmpl) float64 {
 	return best
 }
 
-func bitsDice(a []bool, aw, ah int, b []bool, bw, bh int) float64 {
+// bitsDice 算两张点阵的 Dice 相似度，并在若干位移里取最好的一档。
+// bAnti 是 b 的描边（可为 nil）：a 在描边上亮起来，说明那儿是背景杂色，按比例扣分。
+func bitsDice(a []bool, aw, ah int, b []bool, bw, bh int, bAnti []bool) float64 {
 	if aw <= 0 || ah <= 0 || bw <= 0 || bh <= 0 {
 		return 0
+	}
+	if len(bAnti) != bw*bh {
+		bAnti = nil
+	}
+	nAnti := 0
+	for _, on := range bAnti {
+		if on {
+			nAnti++
+		}
 	}
 	w, h := aw, ah
 	if bw > w {
@@ -677,15 +661,19 @@ func bitsDice(a []bool, aw, ah int, b []bool, bw, bh int) float64 {
 	}
 	for dy := -maxDy; dy <= maxDy; dy++ {
 		for dx := -maxDx; dx <= maxDx; dx++ {
-			inter, na, nb := 0, 0, 0
+			inter, na, nb, bleed := 0, 0, 0, 0
 			for y := 0; y < h; y++ {
 				ay, by := y, y-dy
 				for x := 0; x < w; x++ {
 					ax, bx := x, x-dx
 					av := ay >= 0 && ay < ah && ax >= 0 && ax < aw && a[ay*aw+ax]
-					bv := by >= 0 && by < bh && bx >= 0 && bx < bw && b[by*bw+bx]
+					inB := by >= 0 && by < bh && bx >= 0 && bx < bw
+					bv := inB && b[by*bw+bx]
 					if av {
 						na++
+						if bAnti != nil && inB && bAnti[by*bw+bx] {
+							bleed++
+						}
 					}
 					if bv {
 						nb++
@@ -699,6 +687,9 @@ func bitsDice(a []bool, aw, ah int, b []bool, bw, bh int) float64 {
 				continue
 			}
 			s := float64(2*inter) / float64(na+nb)
+			if nAnti > 0 {
+				s -= antiWeight * float64(bleed) / float64(nAnti)
+			}
 			if s > best {
 				best = s
 			}
@@ -708,7 +699,7 @@ func bitsDice(a []bool, aw, ah int, b []bool, bw, bh int) float64 {
 }
 
 func resizeBits(src []bool, sw, sh, dw, dh int) []bool {
-	if sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0 {
+	if sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0 || len(src) != sw*sh {
 		return nil
 	}
 	if sw == dw && sh == dh {

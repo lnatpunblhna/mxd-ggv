@@ -43,14 +43,12 @@ func (r RelRect) clamp() RelRect {
 	return r
 }
 
-// CalibSpec 是前端提交的框选与当前数量。
+// CalibSpec 是前端提交的框选。数量一律由校准时自动识别，前端不提交。
 type CalibSpec struct {
-	HPSlot  RelRect `json:"hpSlot"`
-	MPSlot  RelRect `json:"mpSlot"`
-	HPBar   RelRect `json:"hpBar"`
-	MPBar   RelRect `json:"mpBar"`
-	HPCount int     `json:"hpCount"`
-	MPCount int     `json:"mpCount"`
+	HPSlot RelRect `json:"hpSlot"`
+	MPSlot RelRect `json:"mpSlot"`
+	HPBar  RelRect `json:"hpBar"`
+	MPBar  RelRect `json:"mpBar"`
 }
 
 // WatchOptions 控制采样、防抖与提醒阈值。
@@ -122,45 +120,43 @@ type Alert struct {
 
 // Status 是暴露给前端的运行快照。
 type Status struct {
-	Enabled       bool       `json:"enabled"`
-	Handle        uint64     `json:"handle"`
-	Calibrated    bool       `json:"calibrated"`
-	StartedAt     int64      `json:"startedAt"`
-	LastError     string     `json:"lastError"`
-	HP            SlotStatus `json:"hp"`
-	MP            SlotStatus `json:"mp"`
-	LastAlert     *Alert     `json:"lastAlert,omitempty"`
-	HasHPSlot     bool       `json:"hasHPSlot"`
-	HasMPSlot     bool       `json:"hasMPSlot"`
-	HasHPBar      bool       `json:"hasHPBar"`
-	HasMPBar      bool       `json:"hasMPBar"`
-	HPSlot        RelRect    `json:"hpSlot"`
-	MPSlot        RelRect    `json:"mpSlot"`
-	HPBar         RelRect    `json:"hpBar"`
-	MPBar         RelRect    `json:"mpBar"`
-	LowCount      int        `json:"lowCount"`
-	EmptyFrames   int        `json:"emptyFrames"`
-	CooldownSec   int        `json:"cooldownSec"`
-	LearnedDigits []int      `json:"learnedDigits,omitempty"`
+	Enabled     bool       `json:"enabled"`
+	Handle      uint64     `json:"handle"`
+	Calibrated  bool       `json:"calibrated"`
+	StartedAt   int64      `json:"startedAt"`
+	LastError   string     `json:"lastError"`
+	HP          SlotStatus `json:"hp"`
+	MP          SlotStatus `json:"mp"`
+	LastAlert   *Alert     `json:"lastAlert,omitempty"`
+	HasHPSlot   bool       `json:"hasHPSlot"`
+	HasMPSlot   bool       `json:"hasMPSlot"`
+	HasHPBar    bool       `json:"hasHPBar"`
+	HasMPBar    bool       `json:"hasMPBar"`
+	HPSlot      RelRect    `json:"hpSlot"`
+	MPSlot      RelRect    `json:"mpSlot"`
+	HPBar       RelRect    `json:"hpBar"`
+	MPBar       RelRect    `json:"mpBar"`
+	LowCount    int        `json:"lowCount"`
+	EmptyFrames int        `json:"emptyFrames"`
+	CooldownSec int        `json:"cooldownSec"`
 }
 
 // CalibrationView 是校准结果的前端视图，不含原始像素。
 type CalibrationView struct {
-	HPSlot        RelRect `json:"hpSlot"`
-	MPSlot        RelRect `json:"mpSlot"`
-	HPBar         RelRect `json:"hpBar"`
-	MPBar         RelRect `json:"mpBar"`
-	HasHPSlot     bool    `json:"hasHPSlot"`
-	HasMPSlot     bool    `json:"hasMPSlot"`
-	HasHPBar      bool    `json:"hasHPBar"`
-	HasMPBar      bool    `json:"hasMPBar"`
-	FrameW        int     `json:"frameW"`
-	FrameH        int     `json:"frameH"`
-	HPPreview     string  `json:"hpPreview"`
-	MPPreview     string  `json:"mpPreview"`
-	HPCount       int     `json:"hpCount"`
-	MPCount       int     `json:"mpCount"`
-	LearnedDigits []int   `json:"learnedDigits,omitempty"`
+	HPSlot    RelRect `json:"hpSlot"`
+	MPSlot    RelRect `json:"mpSlot"`
+	HPBar     RelRect `json:"hpBar"`
+	MPBar     RelRect `json:"mpBar"`
+	HasHPSlot bool    `json:"hasHPSlot"`
+	HasMPSlot bool    `json:"hasMPSlot"`
+	HasHPBar  bool    `json:"hasHPBar"`
+	HasMPBar  bool    `json:"hasMPBar"`
+	FrameW    int     `json:"frameW"`
+	FrameH    int     `json:"frameH"`
+	HPPreview string  `json:"hpPreview"`
+	MPPreview string  `json:"mpPreview"`
+	HPCount   int     `json:"hpCount"`
+	MPCount   int     `json:"mpCount"`
 }
 
 // ColorRange 是 HSV 阈值。H 为 0–360。
