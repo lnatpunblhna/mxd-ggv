@@ -6,7 +6,7 @@ require (
 	git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3
 	github.com/lnatpunblhna/go-game-vision v1.5.0
 	github.com/wailsapp/wails/v2 v2.15.0
-	golang.org/x/sys v0.46.0
+	golang.org/x/sys v0.47.0
 )
 
 require (
