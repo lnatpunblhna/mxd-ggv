@@ -2,12 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
 
-# 同一分支/PR 上新的 push 会取消仍在跑的旧任务
+# 同一 tag 上重复触发时取消仍在跑的旧任务
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
