@@ -66,7 +66,7 @@ jobs:
 
       - name: 缓存 wails CLI
         id: wails-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/go/bin/wails.exe
           key: wails-${{ runner.os }}-${{ env.WAILS_VERSION }}-go${{ env.GO_VERSION }}
